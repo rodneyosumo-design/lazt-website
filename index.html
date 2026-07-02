@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>LAZT</title>
+<meta name="description" content="LAZT — a living 3D capture you can move through." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<style>
+  :root{
+    --bg:#05060a;
+    --fg:#eef2f8;
+    --muted:#8a93a6;
+    --dim:#4b5162;
+    --a1:#22d3ee;   /* cyan  */
+    --a2:#a78bfa;   /* violet */
+    --line:rgba(255,255,255,.10);
+    --pad: clamp(18px, 4vw, 56px);
+    --font-d:"Space Grotesk", system-ui, sans-serif;
+    --font-m:"JetBrains Mono", ui-monospace, monospace;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--fg); }
+  body{
+    font-family:var(--font-d);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  a{ color:inherit; text-decoration:none; }
+
+  /* ---- WebGL canvas: fixed full-viewport background ---- */
+  #gl{
+    position:fixed; inset:0;
+    width:100vw; height:100vh; height:100dvh;
+    display:block; z-index:0;
+    background:var(--bg);
+  }
+
+  /* ---- atmosphere overlays ---- */
+  #vignette{
+    position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 50% 42%, transparent 55%, rgba(0,0,0,.55) 100%),
+      linear-gradient(to bottom, rgba(5,6,10,.35) 0%, transparent 22%, transparent 72%, rgba(5,6,10,.75) 100%);
+  }
+  #grain{
+    position:fixed; inset:0; z-index:2; pointer-events:none; opacity:.05;
+    mix-blend-mode:soft-light;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---- framing HUD marks (techy corners) ---- */
+  .hud{ position:fixed; z-index:6; pointer-events:none; width:22px; height:22px; border:1px solid var(--line); opacity:.5; }
+  .hud.tl{ top:calc(var(--pad) - 6px); left:calc(var(--pad) - 6px); border-right:0; border-bottom:0; }
+  .hud.tr{ top:calc(var(--pad) - 6px); right:calc(var(--pad) - 6px); border-left:0; border-bottom:0; }
+  .hud.bl{ bottom:calc(var(--pad) - 6px); left:calc(var(--pad) - 6px); border-right:0; border-top:0; }
+  .hud.br{ bottom:calc(var(--pad) - 6px); right:calc(var(--pad) - 6px); border-left:0; border-top:0; }
+
+  /* ---- top nav ---- */
+  nav{
+    position:fixed; top:0; left:0; right:0; z-index:12;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px var(--pad);
+    font-family:var(--font-m);
+  }
+  nav .brand{ font-family:var(--font-d); font-weight:700; letter-spacing:.28em; font-size:15px; }
+  nav .brand b{ background:linear-gradient(90deg,var(--a1),var(--a2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  nav .links{ display:flex; gap:26px; font-size:11px; letter-spacing:.18em; color:var(--muted); text-transform:uppercase; }
+  nav .links a{ position:relative; transition:color .25s; }
+  nav .links a:hover{ color:var(--fg); }
+  nav .links a::after{ content:""; position:absolute; left:0; bottom:-6px; width:0; height:1px; background:linear-gradient(90deg,var(--a1),var(--a2)); transition:width .3s; }
+  nav .links a:hover::after{ width:100%; }
+
+  /* ---- right progress rail ---- */
+  #rail{
+    position:fixed; right:calc(var(--pad) - 6px); top:50%; transform:translateY(-50%);
+    z-index:11; display:flex; flex-direction:column; gap:14px; align-items:center; pointer-events:none;
+  }
+  #rail .dot{ width:7px; height:7px; border-radius:50%; border:1px solid var(--dim); transition:.35s; }
+  #rail .dot.on{ border-color:var(--a1); background:var(--a1); box-shadow:0 0 12px var(--a1); transform:scale(1.15); }
+
+  /* ---- bottom status readout ---- */
+  #status{
+    position:fixed; left:var(--pad); bottom:calc(var(--pad) - 4px); z-index:11;
+    font-family:var(--font-m); font-size:10.5px; letter-spacing:.14em; color:var(--dim);
+    pointer-events:none; text-transform:uppercase;
+    opacity:0; transition:opacity .5s;
+  }
+  #status b{ color:var(--muted); font-weight:500; }
+
+  /* ---- the 3D-anchored text layer ---- */
+  #stage{ position:fixed; inset:0; z-index:5; pointer-events:none; }
+  .stop{
+    position:fixed; top:0; left:0; width:min(560px, 86vw);
+    transform:translate(-9999px,-9999px);
+    will-change:transform,opacity; opacity:0;
+    padding:22px 26px;
+  }
+  .stop::before{  /* soft dark backing so text stays legible over bright splat */
+    content:""; position:absolute; inset:-8% -6%;
+    background:radial-gradient(60% 60% at 30% 45%, rgba(5,6,10,.72), rgba(5,6,10,0) 75%);
+    z-index:-1; filter:blur(6px);
+  }
+  .stop .kicker{
+    font-family:var(--font-m); font-size:12px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--a1); display:inline-flex; align-items:center; gap:12px; margin:0 0 18px;
+  }
+  .stop .kicker::before{ content:""; width:34px; height:1px; background:linear-gradient(90deg,var(--a1),var(--a2)); display:inline-block; }
+  .stop h1,.stop h2{
+    font-family:var(--font-d); font-weight:600; line-height:1.02; margin:0 0 18px;
+    letter-spacing:-.02em; text-wrap:balance;
+    text-shadow:0 2px 40px rgba(0,0,0,.6);
+  }
+  .stop h1{ font-size:clamp(44px, 7.5vw, 92px); font-weight:700; }
+  .stop h2{ font-size:clamp(32px, 5vw, 60px); }
+  .stop h1 em,.stop h2 em{ font-style:normal; background:linear-gradient(100deg,var(--a1),var(--a2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .stop p{ font-size:clamp(15px,1.5vw,19px); line-height:1.55; color:var(--muted); max-width:44ch; margin:0; font-weight:300; }
+  .stop[data-align="center"] p{ margin-left:auto; margin-right:auto; }
+  .stop .cta{
+    display:inline-flex; align-items:center; gap:12px; margin-top:26px;
+    font-family:var(--font-m); font-size:13px; letter-spacing:.12em; text-transform:uppercase;
+    padding:14px 22px; border:1px solid var(--line); border-radius:2px; color:var(--fg);
+    pointer-events:auto; transition:.3s; background:rgba(255,255,255,.02);
+  }
+  .stop .cta:hover{ border-color:var(--a1); box-shadow:0 0 24px rgba(34,211,238,.25); transform:translateY(-1px); }
+  .stop .cta span{ color:var(--a1); }
+
+  /* ---- scroll hint (hero) ---- */
+  #hint{
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:8;
+    font-family:var(--font-m); font-size:10px; letter-spacing:.3em; color:var(--muted);
+    text-transform:uppercase; text-align:center; pointer-events:none; transition:opacity .5s;
+  }
+  #hint .mouse{ width:22px; height:34px; border:1px solid var(--line); border-radius:12px; margin:0 auto 10px; position:relative; }
+  #hint .mouse::after{ content:""; position:absolute; left:50%; top:7px; width:3px; height:6px; border-radius:2px; background:var(--a1); transform:translateX(-50%); animation:sc 1.6s infinite; }
+  @keyframes sc{ 0%{ opacity:0; transform:translate(-50%,0);} 30%{opacity:1;} 100%{opacity:0; transform:translate(-50%,12px);} }
+
+  /* ---- loader ---- */
+  #loader{
+    position:fixed; inset:0; z-index:100; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px;
+    transition:opacity .8s ease; font-family:var(--font-m);
+  }
+  #loader.hide{ opacity:0; pointer-events:none; }
+  #loader .logo{ font-family:var(--font-d); font-weight:700; letter-spacing:.4em; font-size:22px; }
+  #loader .logo b{ background:linear-gradient(90deg,var(--a1),var(--a2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  #loader .bar{ width:min(280px,60vw); height:2px; background:rgba(255,255,255,.08); overflow:hidden; }
+  #loader .bar i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--a1),var(--a2)); transition:width .2s; }
+  #loader .pct{ font-size:11px; letter-spacing:.25em; color:var(--muted); }
+
+  /* ---- scroll spacer: creates the scroll length ---- */
+  #scroller{ position:relative; z-index:4; pointer-events:none; }
+
+  /* ---- director HUD (dev only) ---- */
+  #dir{ position:fixed; left:var(--pad); top:80px; z-index:50; font-family:var(--font-m); font-size:11px; color:var(--a1); background:rgba(0,0,0,.6); padding:10px 12px; border:1px solid var(--line); display:none; white-space:pre; }
+  #dir.on{ display:block; }
+
+  @media (max-width:720px){
+    nav .links{ display:none; }
+    #rail{ display:none; }
+    .stop{ width:88vw; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    #hint .mouse::after{ animation:none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="vignette"></div>
+  <div id="grain"></div>
+
+  <div class="hud tl"></div><div class="hud tr"></div><div class="hud bl"></div><div class="hud br"></div>
+
+  <nav>
+    <div class="brand"><b>LAZT</b></div>
+    <div class="links">
+      <a href="#work">Work</a>
+      <a href="#about">About</a>
+      <a href="#contact">Contact</a>
+    </div>
+  </nav>
+
+  <aside id="rail"></aside>
+
+  <div id="status">MILFORD.SOG · <b>1.6M</b> PTS · SCROLL <b id="st-pct">0%</b></div>
+
+  <!-- 3D-anchored text; injected by JS from STOPS -->
+  <main id="stage"></main>
+
+  <div id="hint"><div class="mouse"></div>Scroll to explore</div>
+
+  <div id="scroller"></div>
+
+  <div id="dir"></div>
+
+  <div id="loader">
+    <div class="logo"><b>LAZT</b></div>
+    <div class="bar"><i id="ld-bar"></i></div>
+    <div class="pct" id="ld-pct">LOADING SCENE · 0%</div>
+  </div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh, SplatLoader } from "@sparkjsdev/spark";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+/* =========================================================================
+   CONFIG
+   ========================================================================= */
+const SPLAT_URL = window.LAZT_SPLAT_URL || "./milford_25mb.sog";
+
+/* ---- SCROLL STOPS ----------------------------------------------------------
+   Each stop = a camera pose (pos + target) + a 3D anchor for its text block.
+   pos/target tuned against the real splat via director mode (press "d").
+   COPY IS PLACEHOLDER — will be replaced with the real site content.
+--------------------------------------------------------------------------- */
+const STOPS = [
+  {
+    pos:[1.05, 1.90, 2.05], target:[-5.00, 0.90, 3.00], anchor:[-1.60, 1.42, 2.80],
+    kicker:"LAZT // MILFORD",
+    title:"See it from<br><em>every angle.</em>",
+    body:"A living 3D capture you can move through. Scroll to drift across the scene.",
+    tag:"h1", align:"center"
+  },
+  {
+    pos:[-1.20, 1.85, 1.05], target:[-0.99, 1.40, -4.94], anchor:[-1.09, 1.50, -2.14],
+    kicker:"01 — Capture",
+    title:"Reality, <em>digitized.</em>",
+    body:"1.6 million gaussian points reconstructed into a photoreal space you can explore right in the browser.",
+    tag:"h2"
+  },
+  {
+    pos:[-1.15, 1.60, 1.00], target:[3.16, 1.18, -3.16], anchor:[1.15, 1.38, -1.22],
+    kicker:"02 — Motion",
+    title:"Move <em>through it.</em>",
+    body:"The camera drifts through the scene as you scroll — no clicks, no controls to learn.",
+    tag:"h2"
+  },
+  {
+    pos:[-0.50, 1.90, 2.10], target:[4.88, 0.95, 0.30], anchor:[1.65, 1.40, 1.30],
+    kicker:"03 — Depth",
+    title:"Words in <em>space.</em>",
+    body:"Every line of text is anchored to a real point in the 3D scene and parallaxes as the view moves.",
+    tag:"h2"
+  },
+  {
+    pos:[-0.60, 1.85, 1.60], target:[3.18, 1.04, 5.13], anchor:[1.20, 1.35, 3.15],
+    kicker:"04 — Craft",
+    title:"Built for <em>the web.</em>",
+    body:"Runs anywhere a browser does. Lightweight, embeddable, and entirely yours to shape.",
+    tag:"h2"
+  },
+  {
+    pos:[-0.70, 1.82, 1.10], target:[-0.17, 1.14, 6.78], anchor:[-0.56, 1.40, 4.01],
+    kicker:"05 — Fidelity",
+    title:"Every <em>detail.</em>",
+    body:"From woodgrain to glassware — the whole room, captured in place.",
+    tag:"h2"
+  },
+  {
+    pos:[-1.05, 1.60, 0.90], target:[1.19, 1.29, 6.46], anchor:[0.15, 1.43, 3.86],
+    kicker:"06 — Contact",
+    title:"Let's <em>build.</em>",
+    body:"Ready to bring your world online?",
+    tag:"h2", align:"center",
+    cta:{ label:"Get in touch", href:"#contact" }
+  },
+];
+
+/* =========================================================================
+   THREE + SPARK SETUP
+   ========================================================================= */
+const canvas = document.getElementById("gl");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.01, 1000);
+camera.position.set(...STOPS[0].pos);
+
+const spark = new SparkRenderer({ renderer });
+scene.add(spark);
+
+/* camera path through the stops */
+const posCurve = new THREE.CatmullRomCurve3(STOPS.map(s=>new THREE.Vector3(...s.pos)), false, "catmullrom", 0.5);
+const tgtCurve = new THREE.CatmullRomCurve3(STOPS.map(s=>new THREE.Vector3(...s.target)), false, "catmullrom", 0.5);
+const curPos = new THREE.Vector3(...STOPS[0].pos);
+const curTgt = new THREE.Vector3(...STOPS[0].target);
+
+/* =========================================================================
+   BUILD TEXT BLOCKS
+   ========================================================================= */
+const stage = document.getElementById("stage");
+const rail = document.getElementById("rail");
+const els = STOPS.map((s, i)=>{
+  const el = document.createElement("section");
+  el.className = "stop";
+  if (s.align === "center"){ el.style.textAlign = "center"; el.dataset.align = "center"; }
+  const tag = s.tag || "h2";
+  el.innerHTML =
+    `<div class="kicker">${s.kicker}</div>` +
+    `<${tag}>${s.title}</${tag}>` +
+    `<p>${s.body}</p>` +
+    (s.cta ? `<a class="cta" href="${s.cta.href}">${s.cta.label} <span>→</span></a>` : "");
+  stage.appendChild(el);
+
+  const dot = document.createElement("div");
+  dot.className = "dot" + (i===0 ? " on":"");
+  rail.appendChild(dot);
+  return el;
+});
+const dots = [...rail.children];
+const anchors = STOPS.map(s=>new THREE.Vector3(...(s.anchor || s.target)));
+
+/* =========================================================================
+   LOAD SPLAT
+   ========================================================================= */
+const loader = document.getElementById("loader");
+const ldBar = document.getElementById("ld-bar");
+const ldPct = document.getElementById("ld-pct");
+function setProgress(f){
+  const p = Math.round(f*100);
+  ldBar.style.width = p + "%";
+  ldPct.textContent = "LOADING SCENE · " + p + "%";
+}
+function hideLoader(){ loader.classList.add("hide"); document.body.dataset.ready="1"; }
+
+let splat = null;
+(async function loadSplat(){
+  try{
+    const l = new SplatLoader();
+    const packed = await l.loadAsync(SPLAT_URL, (e)=>{
+      if (e && e.total) setProgress(e.loaded/e.total);
+    });
+    splat = new SplatMesh({ packedSplats: packed });
+  }catch(err){
+    console.warn("[LAZT] SplatLoader path failed, falling back to url:", err);
+    splat = new SplatMesh({ url: SPLAT_URL });
+    setProgress(1);
+    if (splat.initialized && splat.initialized.then){ try{ await splat.initialized; }catch(e){} }
+  }
+  // orientation: tuned live via window.LAZT.setQuat(); default from ORIENT
+  splat.quaternion.fromArray(window.LAZT.ORIENT);
+  splat.position.set(0,0,0);
+  splat.frustumCulled = false;   // Spark has no reliable bounding sphere; never cull
+  scene.add(splat);
+  window.LAZT.splat = splat;
+  setProgress(1);
+  setTimeout(hideLoader, 250);
+})();
+
+/* =========================================================================
+   SCROLL → CAMERA
+   ========================================================================= */
+document.getElementById("scroller").style.height = (STOPS.length * 100) + "vh";
+
+function progress(){
+  const max = document.documentElement.scrollHeight - innerHeight;
+  return max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+}
+const smooth = t => t*t*(3-2*t);
+const hint = document.getElementById("hint");
+const statusEl = document.getElementById("status");
+const stPct = document.getElementById("st-pct");
+
+function placeText(p){
+  const N = STOPS.length;
+  const win = 0.62/(N-1);
+  for (let i=0;i<N;i++){
+    const v = anchors[i].clone().project(camera);
+    const behind = v.z > 1;
+    const si = i/(N-1);
+    let op = 1 - Math.abs(p - si)/win;
+    op = behind ? 0 : Math.max(0, Math.min(1, op));
+    op = smooth(op);
+    const dist = camera.position.distanceTo(anchors[i]);
+    const m = 24;
+    let scale = Math.max(0.72, Math.min(1.2, 5.4/dist));
+    scale = Math.min(scale, (innerWidth - 2*m)/els[i].offsetWidth); // never wider than viewport
+    // clamp so blocks never slide off-screen or under the nav
+    const w = els[i].offsetWidth*scale, h = els[i].offsetHeight*scale;
+    let x = (v.x*0.5+0.5)*innerWidth;
+    let y = (-v.y*0.5+0.5)*innerHeight;
+    x = Math.min(innerWidth  - m - w/2, Math.max(m + w/2, x));
+    y = Math.min(innerHeight - m - h/2, Math.max(70 + h/2, y));
+    els[i].style.opacity = op.toFixed(3);
+    els[i].style.transform = `translate(-50%,-50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${scale.toFixed(3)})`;
+    els[i].style.pointerEvents = op > 0.55 ? "auto" : "none";
+  }
+}
+
+function updateRail(p){
+  const idx = Math.round(p*(STOPS.length-1));
+  dots.forEach((d,i)=> d.classList.toggle("on", i===idx));
+  stPct.textContent = Math.round(p*100) + "%";
+}
+
+/* =========================================================================
+   RENDER LOOP
+   ========================================================================= */
+const dir = { on:false, controls:null };
+const dirHUD = document.getElementById("dir");
+
+renderer.setAnimationLoop(()=>{
+  if (dir.on && dir.controls){
+    dir.controls.update();
+    const t = dir.controls.target;
+    dirHUD.textContent =
+      `DIRECTOR\npos: [${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}]\n` +
+      `tgt: [${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)}]`;
+  } else if (window.LAZT.view){
+    const v = window.LAZT.view;
+    camera.position.set(...v.pos);
+    camera.lookAt(new THREE.Vector3(...v.target));
+    placeText(progress());
+  } else {
+    const p = progress();
+    posCurve.getPoint(p, curPos.__tmp || (curPos.__tmp = new THREE.Vector3()));
+    tgtCurve.getPoint(p, curTgt.__tmp || (curTgt.__tmp = new THREE.Vector3()));
+    curPos.lerp(curPos.__tmp, 0.09);
+    curTgt.lerp(curTgt.__tmp, 0.09);
+    camera.position.copy(curPos);
+    camera.lookAt(curTgt);
+    placeText(p);
+    updateRail(p);
+    hint.style.opacity = p > 0.02 ? 0 : 1;
+    statusEl.style.opacity = p > 0.02 ? 1 : 0;   // swaps with the hint so they never overlap
+  }
+  renderer.render(scene, camera);
+});
+
+/* =========================================================================
+   RESIZE
+   ========================================================================= */
+addEventListener("resize", ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* =========================================================================
+   DIRECTOR MODE + DEV API  (press "d" to toggle; "c" logs a keyframe)
+   ========================================================================= */
+window.LAZT = {
+  view:null, splat:null, STOPS, camera, renderer, scene, THREE,
+  ORIENT:[1,0,0,0],                         // 180° about X: this scan is stored Y-down
+  look(px,py,pz,tx,ty,tz){ this.view={pos:[px,py,pz],target:[tx,ty,tz]}; },
+  clear(){ this.view=null; },
+  setQuat(x,y,z,w){ this.ORIENT=[x,y,z,w]; if(this.splat){ this.splat.quaternion.set(x,y,z,w); this.splat.updateMatrixWorld(true);} },
+  setUp(x,y,z){ camera.up.set(x,y,z); },
+  fov(f){ camera.fov=f; camera.updateProjectionMatrix(); },
+  bbox(){ try{ const b=this.splat.getBoundingBox(); return {min:b.min.toArray(),max:b.max.toArray(),center:[(b.min.x+b.max.x)/2,(b.min.y+b.max.y)/2,(b.min.z+b.max.z)/2]}; }catch(e){ return 'err:'+e.message; } }
+};
+
+addEventListener("keydown",(e)=>{
+  if (e.key === "d"){
+    dir.on = !dir.on;
+    dirHUD.classList.toggle("on", dir.on);
+    stage.style.display = dir.on ? "none":"block";
+    if (dir.on){
+      if (!dir.controls){
+        dir.controls = new OrbitControls(camera, renderer.domElement);
+        dir.controls.enableDamping = true;
+      }
+      dir.controls.target.copy(curTgt);
+      dir.controls.enabled = true;
+    } else if (dir.controls){
+      dir.controls.enabled = false;
+    }
+  }
+  if (e.key === "c" && dir.on){
+    const t = dir.controls.target;
+    const kf = { pos:[+camera.position.x.toFixed(2),+camera.position.y.toFixed(2),+camera.position.z.toFixed(2)],
+                 target:[+t.x.toFixed(2),+t.y.toFixed(2),+t.z.toFixed(2)] };
+    console.log("KEYFRAME", JSON.stringify(kf));
+  }
+});
+</script>
+</body>
+</html>
