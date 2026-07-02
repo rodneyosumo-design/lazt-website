@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="preload" href="./milford_25mb.sog" as="fetch" />
 
 <style>
   :root{
@@ -288,8 +289,11 @@ const STOPS = [
    THREE + SPARK SETUP
    ========================================================================= */
 const canvas = document.getElementById("gl");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// MSAA is wasted on gaussian splats (soft blobs, no hard edges) — preBlurAmount below covers smoothing
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference:"high-performance" });
+const DPR_CAP = Math.min(window.devicePixelRatio, 1.5);
+let dpr = DPR_CAP;
+renderer.setPixelRatio(dpr);
 renderer.setSize(innerWidth, innerHeight);
 
 const scene = new THREE.Scene();
@@ -298,7 +302,13 @@ scene.background = new THREE.Color(0x05060a);
 const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.01, 1000);
 camera.position.set(...STOPS[0].pos);
 
-const spark = new SparkRenderer({ renderer });
+const spark = new SparkRenderer({
+  renderer,
+  maxStdDev: Math.sqrt(5),  // slimmer splat extent (docs: sqrt(4)–sqrt(9) acceptable) → ~37% less overdraw
+  preBlurAmount: 0.3,       // doc-recommended smoothing for non-antialiased scenes
+  minSortIntervalMs: 16,    // don't re-sort faster than ~60Hz
+  lodRenderScale: 2.0       // skip sub-pixel splats (docs: up to 5.0 often indistinguishable)
+});
 scene.add(spark);
 
 /* camera path through the stops */
@@ -331,6 +341,12 @@ const els = STOPS.map((s, i)=>{
 });
 const dots = [...rail.children];
 const anchors = STOPS.map(s=>new THREE.Vector3(...(s.anchor || s.target)));
+
+/* cache block sizes — reading offsetWidth per frame forces layout */
+const dims = els.map(()=>({w:0,h:0}));
+function measureBlocks(){ els.forEach((el,i)=>{ dims[i].w = el.offsetWidth; dims[i].h = el.offsetHeight; }); }
+measureBlocks();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureBlocks);
 
 /* =========================================================================
    LOAD SPLAT
@@ -365,6 +381,7 @@ let splat = null;
   splat.frustumCulled = false;   // Spark has no reliable bounding sphere; never cull
   scene.add(splat);
   window.LAZT.splat = splat;
+  wake();
   setProgress(1);
   setTimeout(hideLoader, 250);
 })();
@@ -383,11 +400,12 @@ const hint = document.getElementById("hint");
 const statusEl = document.getElementById("status");
 const stPct = document.getElementById("st-pct");
 
+const _pv = new THREE.Vector3();
 function placeText(p){
   const N = STOPS.length;
   const win = 0.62/(N-1);
   for (let i=0;i<N;i++){
-    const v = anchors[i].clone().project(camera);
+    const v = _pv.copy(anchors[i]).project(camera);
     const behind = v.z > 1;
     const si = i/(N-1);
     let op = 1 - Math.abs(p - si)/win;
@@ -396,9 +414,9 @@ function placeText(p){
     const dist = camera.position.distanceTo(anchors[i]);
     const m = 24;
     let scale = Math.max(0.72, Math.min(1.2, 5.4/dist));
-    scale = Math.min(scale, (innerWidth - 2*m)/els[i].offsetWidth); // never wider than viewport
+    scale = Math.min(scale, (innerWidth - 2*m)/dims[i].w); // never wider than viewport
     // clamp so blocks never slide off-screen or under the nav
-    const w = els[i].offsetWidth*scale, h = els[i].offsetHeight*scale;
+    const w = dims[i].w*scale, h = dims[i].h*scale;
     let x = (v.x*0.5+0.5)*innerWidth;
     let y = (-v.y*0.5+0.5)*innerHeight;
     x = Math.min(innerWidth  - m - w/2, Math.max(m + w/2, x));
@@ -421,7 +439,14 @@ function updateRail(p){
 const dir = { on:false, controls:null };
 const dirHUD = document.getElementById("dir");
 
+let lastT = performance.now(), lastActive = lastT, emaFrame = 16, lastAdjust = lastT;
+function wake(){ lastActive = performance.now(); }
+
 renderer.setAnimationLoop(()=>{
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastT)/1000); lastT = now;
+  let active = true;
+
   if (dir.on && dir.controls){
     dir.controls.update();
     const t = dir.controls.target;
@@ -437,14 +462,34 @@ renderer.setAnimationLoop(()=>{
     const p = progress();
     posCurve.getPoint(p, curPos.__tmp || (curPos.__tmp = new THREE.Vector3()));
     tgtCurve.getPoint(p, curTgt.__tmp || (curTgt.__tmp = new THREE.Vector3()));
-    curPos.lerp(curPos.__tmp, 0.09);
-    curTgt.lerp(curTgt.__tmp, 0.09);
-    camera.position.copy(curPos);
-    camera.lookAt(curTgt);
-    placeText(p);
-    updateRail(p);
-    hint.style.opacity = p > 0.02 ? 0 : 1;
-    statusEl.style.opacity = p > 0.02 ? 1 : 0;   // swaps with the hint so they never overlap
+    const k = 1 - Math.exp(-5.6 * dt);   // framerate-independent smoothing (≈0.09/frame at 60Hz)
+    curPos.lerp(curPos.__tmp, k);
+    curTgt.lerp(curTgt.__tmp, k);
+    const settled = curPos.distanceToSquared(curPos.__tmp) < 1e-7 &&
+                    curTgt.distanceToSquared(curTgt.__tmp) < 1e-7;
+    if (!settled) lastActive = now;
+    active = now - lastActive < 400;
+    if (active){
+      camera.position.copy(curPos);
+      camera.lookAt(curTgt);
+      placeText(p);
+      updateRail(p);
+      hint.style.opacity = p > 0.02 ? 0 : 1;
+      statusEl.style.opacity = p > 0.02 ? 1 : 0;   // swaps with the hint so they never overlap
+    }
+  }
+  if (!active) return;   // camera settled and nothing changed: skip the GPU entirely
+
+  // adaptive resolution: trade pixels for framerate on slow GPUs, recover when there's headroom
+  emaFrame = emaFrame*0.9 + Math.min(dt*1000, 100)*0.1;
+  if (now - lastAdjust > 2000){
+    if (emaFrame > 24 && dpr > 1){
+      dpr = Math.max(1, dpr - 0.25);
+      renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight); lastAdjust = now;
+    } else if (emaFrame < 12 && dpr < DPR_CAP){
+      dpr = Math.min(DPR_CAP, dpr + 0.25);
+      renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight); lastAdjust = now;
+    }
   }
   renderer.render(scene, camera);
 });
@@ -456,6 +501,8 @@ addEventListener("resize", ()=>{
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  measureBlocks();
+  wake();
 });
 
 /* =========================================================================
@@ -465,8 +512,9 @@ window.LAZT = {
   view:null, splat:null, STOPS, camera, renderer, scene, THREE,
   ORIENT:[1,0,0,0],                         // 180° about X: this scan is stored Y-down
   look(px,py,pz,tx,ty,tz){ this.view={pos:[px,py,pz],target:[tx,ty,tz]}; },
-  clear(){ this.view=null; },
-  setQuat(x,y,z,w){ this.ORIENT=[x,y,z,w]; if(this.splat){ this.splat.quaternion.set(x,y,z,w); this.splat.updateMatrixWorld(true);} },
+  clear(){ this.view=null; wake(); },
+  setQuat(x,y,z,w){ this.ORIENT=[x,y,z,w]; if(this.splat){ this.splat.quaternion.set(x,y,z,w); this.splat.updateMatrixWorld(true);} wake(); },
+  wake,
   setUp(x,y,z){ camera.up.set(x,y,z); },
   fov(f){ camera.fov=f; camera.updateProjectionMatrix(); },
   bbox(){ try{ const b=this.splat.getBoundingBox(); return {min:b.min.toArray(),max:b.max.toArray(),center:[(b.min.x+b.max.x)/2,(b.min.y+b.max.y)/2,(b.min.z+b.max.z)/2]}; }catch(e){ return 'err:'+e.message; } }
@@ -475,6 +523,7 @@ window.LAZT = {
 addEventListener("keydown",(e)=>{
   if (e.key === "d"){
     dir.on = !dir.on;
+    wake();
     dirHUD.classList.toggle("on", dir.on);
     stage.style.display = dir.on ? "none":"block";
     if (dir.on){
