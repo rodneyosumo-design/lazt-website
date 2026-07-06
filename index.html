@@ -132,6 +132,37 @@
   .stop .cta:hover{ border-color:var(--a1); box-shadow:0 0 24px rgba(34,211,238,.25); transform:translateY(-1px); }
   .stop .cta span{ color:var(--a1); }
 
+  /* ---- contact form ---- */
+  .cform{ margin-top:26px; pointer-events:auto; text-align:left; }
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; justify-content:center; }
+  .chip{
+    font-family:var(--font-m); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    padding:8px 12px; border:1px solid var(--line); border-radius:2px; color:var(--muted);
+    background:rgba(255,255,255,.02); cursor:pointer; transition:.25s;
+  }
+  .chip:hover{ color:var(--fg); border-color:var(--a1); }
+  .chip.on{ color:var(--fg); border-color:var(--a1); box-shadow:0 0 14px rgba(34,211,238,.18); }
+  .cform textarea, .cform input{
+    width:100%; font-family:var(--font-m); font-size:13px; color:var(--fg);
+    background:rgba(5,6,10,.55); border:1px solid var(--line); border-radius:2px;
+    padding:10px 12px; outline:none; transition:border-color .25s; resize:none;
+  }
+  .cform textarea:focus, .cform input:focus{ border-color:var(--a1); }
+  .crow{ display:flex; gap:8px; margin-top:10px; }
+  .crow input{ flex:1; min-width:0; }
+  .csend{
+    font-family:var(--font-m); font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+    padding:10px 18px; border:1px solid var(--line); border-radius:2px; color:var(--fg);
+    background:rgba(255,255,255,.02); cursor:pointer; transition:.3s; white-space:nowrap;
+  }
+  .csend:hover{ border-color:var(--a1); box-shadow:0 0 24px rgba(34,211,238,.25); }
+  .csend:disabled{ opacity:.5; cursor:default; }
+  .csend span{ color:var(--a1); }
+  .cnote{ font-family:var(--font-m); font-size:11px; letter-spacing:.06em; color:var(--muted); margin-top:10px; min-height:14px; }
+  .cnote a{ color:var(--a1); }
+  .cform.sent{ text-align:center; font-size:13px; }
+  @media (max-width:720px){ .cform textarea, .cform input{ font-size:16px; } }
+
   /* ---- scroll hint (hero) ---- */
   #hint{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:8;
@@ -281,7 +312,7 @@ const STOPS = [
     title:"Let's <em>build.</em>",
     body:"Ready to bring your world online?",
     tag:"h2", align:"center",
-    cta:{ label:"Get in touch", href:"mailto:rodney@laztstudios.com" }
+    form:true
   },
 ];
 
@@ -331,7 +362,21 @@ const els = STOPS.map((s, i)=>{
     `<div class="kicker">${s.kicker}</div>` +
     `<${tag}>${s.title}</${tag}>` +
     `<p>${s.body}</p>` +
-    (s.cta ? `<a class="cta" href="${s.cta.href}">${s.cta.label} <span>→</span></a>` : "");
+    (s.cta ? `<a class="cta" href="${s.cta.href}">${s.cta.label} <span>→</span></a>` : "") +
+    (s.form ? `
+      <form class="cform" novalidate>
+        <div class="chips">
+          <button type="button" class="chip on" data-msg="Hi Rodney — I'd like to book a consultation about a 3D capture project.">Book a consultation</button>
+          <button type="button" class="chip" data-msg="Hi Rodney — I'd like a quote for capturing my space in 3D.">Request a quote</button>
+          <button type="button" class="chip" data-msg="">Something else</button>
+        </div>
+        <textarea name="message" rows="3"></textarea>
+        <div class="crow">
+          <input type="email" name="email" placeholder="your@email.com" autocomplete="email" />
+          <button type="submit" class="csend">Send <span>→</span></button>
+        </div>
+        <div class="cnote"></div>
+      </form>` : "");
   stage.appendChild(el);
 
   const dot = document.createElement("div");
@@ -347,6 +392,47 @@ const dims = els.map(()=>({w:0,h:0}));
 function measureBlocks(){ els.forEach((el,i)=>{ dims[i].w = el.offsetWidth; dims[i].h = el.offsetHeight; }); }
 measureBlocks();
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureBlocks);
+
+/* ---- contact form: templated messages → email via FormSubmit relay ---- */
+const CONTACT_EMAIL = "rodney@laztstudios.com";
+const cform = stage.querySelector(".cform");
+if (cform){
+  const ta = cform.querySelector("textarea");
+  const note = cform.querySelector(".cnote");
+  cform.querySelectorAll(".chip").forEach(ch=>{
+    ch.addEventListener("click", ()=>{
+      cform.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+      ch.classList.add("on");
+      ta.value = ch.dataset.msg;
+      if (!ch.dataset.msg) ta.focus();
+    });
+  });
+  ta.value = cform.querySelector(".chip.on").dataset.msg;
+  cform.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const email = cform.querySelector("input[name=email]").value.trim();
+    const message = ta.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ note.textContent = "Enter a valid email so we can reply."; return; }
+    if (!message){ note.textContent = "Add a quick message first."; return; }
+    const btn = cform.querySelector(".csend");
+    btn.disabled = true; btn.textContent = "Sending…";
+    try{
+      const res = await fetch("https://formsubmit.co/ajax/" + CONTACT_EMAIL, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "Accept":"application/json" },
+        body: JSON.stringify({ email, message, _subject:"LAZT site inquiry", _template:"box", _captcha:"false" })
+      });
+      const j = await res.json();
+      if (!res.ok || !(j.success === "true" || j.success === true)) throw new Error(j.message || "send failed");
+      cform.classList.add("sent");
+      cform.innerHTML = `<div class="cnote">Sent — we'll get back to you at <b style="color:var(--fg)">${email.replace(/</g,"&lt;")}</b>.</div>`;
+      measureBlocks(); wake();
+    }catch(err){
+      btn.disabled = false; btn.innerHTML = "Send <span>→</span>";
+      note.innerHTML = `Couldn't send right now — email <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a> instead.`;
+    }
+  });
+}
 
 /* =========================================================================
    LOAD SPLAT
@@ -480,13 +566,15 @@ renderer.setAnimationLoop(()=>{
   }
   if (!active) return;   // camera settled and nothing changed: skip the GPU entirely
 
-  // adaptive resolution: trade pixels for framerate on slow GPUs, recover when there's headroom
-  emaFrame = emaFrame*0.9 + Math.min(dt*1000, 100)*0.1;
+  // adaptive resolution: trade pixels for framerate on slow GPUs, recover when there's headroom.
+  // 60Hz vsync = 16.7ms/frame, so: sustained >25ms = dropping frames → step down;
+  // <17.5ms = hitting vsync cleanly → step back up. Frames ≥100ms are tab-switch stalls, not load.
+  if (dt < 0.1) emaFrame = emaFrame*0.9 + dt*1000*0.1;
   if (now - lastAdjust > 2000){
-    if (emaFrame > 24 && dpr > 1){
+    if (emaFrame > 25 && dpr > 1){
       dpr = Math.max(1, dpr - 0.25);
       renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight); lastAdjust = now;
-    } else if (emaFrame < 12 && dpr < DPR_CAP){
+    } else if (emaFrame < 17.5 && dpr < DPR_CAP){
       dpr = Math.min(DPR_CAP, dpr + 0.25);
       renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight); lastAdjust = now;
     }
@@ -521,6 +609,7 @@ window.LAZT = {
 };
 
 addEventListener("keydown",(e)=>{
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return; // typing in the form ≠ hotkeys
   if (e.key === "d"){
     dir.on = !dir.on;
     wake();
